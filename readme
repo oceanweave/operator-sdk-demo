@@ -1,0 +1,127 @@
+Operator 可以看成是 CRD 和 Controller 的一种组合特例，Operator 是一种思想，它结合了特定领域知识并通过 CRD 机制扩展了
+Kubernetes API 资源，使用户管理 Kubernetes 的内置资源（Pod、Deployment等）一样创建、配置和管理应用程序，
+Operator 是一个特定的应用程序的控制器，通过扩展 Kubernetes API 资源以代表 Kubernetes 用户创建、配置和管理复杂应用程序的实例，
+通常包含资源模型定义和控制器，通过 `Operator` 通常是为了实现某种特定软件（通常是有状态服务）的自动化运维。
+
+我们完全可以通过上面的方式编写一个 CRD 对象，然后去手动实现一个对应的 Controller 就可以实现一个 Operator，但是我们也发现从头开始
+去构建一个 CRD 控制器并不容易，需要对 Kubernetes 的 API 有深入了解，并且 RBAC 集成、镜像构建、持续集成和部署等都需要很大工作量。
+为了解决这个问题，社区就推出了对应的简单易用的 Operator 框架，比较主流的是
+[kubebuilder](https://github.com/kubernetes-sigs/kubebuilder)和
+[Operator Framework](https://coreos.com/operators)，这两个框架的使用基本上差别不大，
+我们可以根据自己习惯选择一个即可，我们这里先使用`Operator Framework`
+
+
+## Operator Framework
+
+[**Operator Framework**](https://sdk.operatorframework.io)是 CoreOS 开源的一个用于快速开发 Operator 的工具包，该框架包含两个主要的部分：
+
+- Operator SDK: 无需了解复杂的 Kubernetes API 特性，即可让你根据你自己的专业知识构建一个 Operator 应用。
+- Operator Lifecycle Manager（OLM）: 帮助你安装、更新和管理跨集群的运行中的所有 Operator（以及他们的相关服务）
+
+Operator SDK 提供了用于开发 Go、Ansible 以及 Helm 中的 Operator 的工作流，下面的工作流适用于 Golang 的 Operator：
+
+1. 使用 SDK 创建一个新的 Operator 项目
+2. 通过添加自定义资源（CRD）定义新的资源 API
+3. 指定使用 SDK API 来 watch 的资源
+4. 定义 Operator 的协调（reconcile）逻辑
+5. 使用 Operator SDK 构建并生成 Operator 部署清单文件
+
+每种 Operator 类型都有不同的功能集，在选择项目的类型时，重要的是要了解每种项目类型的功能和局限性以及 Operator 的用例。
+
+
+
+
+项目说明：
+    我们平时在部署一个简单的 Webserver 到 Kubernetes 集群中的时候，都需要先编写一个 Deployment 的控制器，然后创建一个 Service 对象，
+    通过 Pod 的 label 标签进行关联，最后通过 Ingress 或者 type=NodePort 类型的 Service 来暴露服务，每次都需要这样操作，是不是略显麻烦，
+    我们就可以创建一个自定义的资源对象，通过我们的 CRD 来描述我们要部署的应用信息，比如镜像、服务端口、环境变量等等，
+    然后创建我们的自定义类型的资源对象的时候，通过控制器去创建对应的 Deployment 和 Service，是不是就方便很多了，
+    相当于我们用一个资源清单去描述了 Deployment 和 Service 要做的两件事情。
+
+    这里我们将创建一个名为 AppService 的 CRD 资源对象，然后定义如下的资源清单进行应用部署：
+
+    ```yaml
+    apiVersion: app.example.com/v1
+    kind: AppService
+    metadata:
+      name: nginx-app
+    spec:
+      size: 2
+      image: nginx:1.7.9
+      ports:
+        - port: 80
+          targetPort: 80
+          nodePort: 30002
+
+    ```
+
+operator-sdk 安装（mac版本）
+    https://github.com/operator-framework/operator-sdk/releases
+    下载 operator-sdk_darwin_amd64 版本
+    chmod +x operator-sdk_darwin_amd64  // 授权
+    sudo cp operator-sdk_darwin_amd64 $GOPATH/bin/operator-sdk // 移动并重命名
+
+初始化：(domain为k8s group使用的 repo用于指定go mode 当前项目mod名称)
+    operator-sdk init --domain oceanweave.io --owner "dfy" --repo github.com/oceanweave/operator-sdk-demo
+
+api: crd-->AppService-->Deployment&Servive
+    app/v1beta1 kind:MyApp
+
+创建api:
+    operator-sdk create api --group app --version v1beta1 --kind MyApp
+
+
+
+
+make：重新生成代码
+
+crd创建： make install
+本地controller运行: make run ENABLE_WEBHOOK=false
+创建myApp:
+    kubectl apply -f config/samples/app_v1beta1_myapp.yaml
+
+拉取国外镜像方法
+1. katacoda 网站
+   随便开启一个课程，如https://www.katacoda.com/courses/kubernetes/launch-single-node-cluster
+2. docker login
+   登陆自己的账户
+3. 拉取镜像
+   如 `docker pull gcr.io/distroless/static:nonroot`
+4. 重新打 tag
+   `docker tag gcr.io/distroless/static:nonroot dfy007/distroless-static:nonroo`
+5. 上传
+   `docker push dfy007/distroless-static:nonroot`
+
+在 docker build 之前，将 Docker file 中的镜像先拉下来，替换为自己的
+Make file 中 可以 RUN 部分 可以添加 GOPROXY，同时可以取消 docker-build 的test 部分 注释掉
+make docker-build IMG=dfy007/myapp:v1.0.0
+make docker-push IMG=dfy007/myapp:v1.0.0
+
+config/default/manager_auth_proxy_patch.yaml
+部署之前 更改一个 proxy 镜像 image: gcr.io/kubebuilder/kube-rbac-proxy:v0.8.0
+用上面方法替换为自己的
+接下来进行部署
+make deploy IMG=dfy007/myapp:v1.0.0 部署crontroller到集群中，部署时会部署 crd
+make undeploy 卸载 controller
+
+使用说明：
+    1. 运行controller
+        make run ENABLE_WEBHOOK=false
+        日志：DEBUG   controller      Successfully Reconciled {"reconcilerGroup": "app.shimo.im", "reconcilerKind": "MyApp", "controller": "myapp", "name": "myapp-demo", "namespace": "default"}
+    2. 创建自定义crd
+        kubectl apply -f config/samples/app_v1beta1_myapp.yaml
+        kubectl get pod,deploy,svc
+        NAME                             READY   STATUS    RESTARTS   AGE
+        pod/myapp-demo-5695c9c66-5zsbl   1/1     Running   0          8s
+        pod/myapp-demo-5695c9c66-dj7d6   1/1     Running   0          8s
+        pod/myapp-demo-5695c9c66-xv2nd   1/1     Running   0          8s
+
+        NAME                         READY   UP-TO-DATE   AVAILABLE   AGE
+        deployment.apps/myapp-demo   3/3     3            3           8s
+
+        NAME                 TYPE        CLUSTER-IP       EXTERNAL-IP   PORT(S)        AGE
+        service/kubernetes   ClusterIP   10.96.0.1        <none>        443/TCP        126d
+        service/myapp-demo   NodePort    10.105.219.190   <none>        80:30081/TCP   8s
+
+    3. 测试
+        删除pod,deploy,svc后观察是否会自动创建
